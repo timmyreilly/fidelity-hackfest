@@ -8,13 +8,19 @@
         "description": "Username for the Virtual Machines"
       }
     },
-    "adminPassword": {
-      "minLength": 12,
-      "type": "securestring",
+    "sshKeyData": {
+      "type": "string",
       "metadata": {
-        "description": "Password for the Virtual Machines(Min Length: 12)"
+        "description": "SSH rsa public key file as a string."
       }
     },
+    "sshKeyPath": {
+       "type": "string",
+       "defaultValue" : "[concat('/home/',parameters('adminUsername'),'/.ssh/authorized_keys')]",
+       "metadata": {
+         "description": "SSH rsa public key file as a string."
+        }
+     },
     "frontTierVmCount": {
       "defaultValue": 2,
       "type": "int",
@@ -47,6 +53,8 @@
   "variables": {
     "vmSize": "Standard_D2_v2",
     "vmStorageAccountType": "StandardSSD_LRS",
+    "frontCustomData": "echo success > \/tmp\/testfile",
+    "backCustomData": "echo success > \/tmp\/testfile",
     "diagStorageAccountName": "[concat(uniqueString(resourceGroup().id),'diagstorage')]",
     "frontLoadBalancerName": "front-lb",
     "frontFrontEndIPConfigID": "[resourceId('Microsoft.Network/loadBalancers/frontendIPConfigurations',variables('frontLoadBalancerName'),'loadBalancerFrontEnd')]",
@@ -65,12 +73,8 @@
     "Publisher": "RedHat",
     "Offer": "RHEL",
     "frontTierVmName": "front-tier-vm",
-    "backTierVmName": "back-tier-vm",
-    "redHatTags": {
-      "type": "object",
-      "provider": "9d2c71fc-96ba-4b4a-93b3-14def5bc96fc"
-    }
-  },
+    "backTierVmName": "back-tier-vm"
+   },
   "resources": [
     {
       "type": "Microsoft.Storage/storageAccounts",
@@ -79,8 +83,7 @@
       "location": "[parameters('location')]",
       "comments": "Storage account used to store the diagnostics data",
       "tags": {
-        "displayName": "Diagnostics Storage Account",
-        "provider": "[variables('redHatTags').provider]"
+        "displayName": "Diagnostics Storage Account"
       },
       "sku": {
         "name": "Standard_LRS"
@@ -95,8 +98,7 @@
       "location": "[parameters('location')]",
       "comments": "These are the Availability Sets for front VMs, back VMs and Database VMs",
       "tags": {
-        "displayName": "Availability Sets",
-        "provider": "[variables('redHatTags').provider]"
+        "displayName": "Availability Sets"
       },
       "copy": {
         "name": "availSetLoop",
@@ -117,8 +119,7 @@
       "location": "[parameters('location')]",
       "comments": "This Load Balancer is used to load balance front traffic among front Tier VMs",
       "tags": {
-        "displayName": "Front Load Balancer",
-        "provider": "[variables('redHatTags').provider]"
+        "displayName": "Front Load Balancer"
       },
       "dependsOn": [
       ],
@@ -207,8 +208,7 @@
       "location": "[parameters('location')]",
       "comments": "This back Load Balancer is used to load balance traffic from front VM's to Bussiness Tier VMs",
       "tags": {
-        "displayName": "Back Load Balancer",
-        "provider": "[variables('redHatTags').provider]"
+        "displayName": "Back Load Balancer"
       },
       "properties": {
         "frontendIPConfigurations": [
@@ -295,8 +295,7 @@
       "location": "[parameters('location')]",
       "comments": "NICs for front Tier VMs",
       "tags": {
-        "displayName": "front Tier VM NICs",
-        "provider": "[variables('redHatTags').provider]"
+        "displayName": "front Tier VM NICs"
       },
       "dependsOn": [
         "[concat('Microsoft.Network/loadBalancers/', variables('frontLoadBalancerName'))]"
@@ -331,8 +330,7 @@
       "location": "[parameters('location')]",
       "comments": "NICs for back Tier VMs",
       "tags": {
-        "displayName": "back Tier VM NICs",
-        "provider": "[variables('redHatTags').provider]"
+        "displayName": "back Tier VM NICs"
       },
       "dependsOn": [
         "[concat('Microsoft.Network/loadBalancers/', variables('backLoadBalancerName'))]"
@@ -367,8 +365,7 @@
       "location": "[parameters('location')]",
       "comments": " front Tier VMs",
       "tags": {
-        "displayName": "front Tier VMs",
-        "provider": "[variables('redHatTags').provider]"
+        "displayName": "front Tier VMs"
       },
       "dependsOn": [
         "[concat('Microsoft.Network/networkInterfaces/', variables('frontTierVmNicName'), copyindex(1))]",
@@ -387,8 +384,18 @@
         },
         "osProfile": {
           "computerName": "[concat('frontserver',copyindex(1))]",
-          "adminUsername": "[parameters('adminUsername')]",
-          "adminPassword": "[parameters('adminPassword')]"
+          "adminUsername": "[parameters('adminUsername')]", 
+          "linuxConfiguration": {
+            "disablePasswordAuthentication": true,
+            "ssh": {
+              "publicKeys": [
+                {
+                  "path" : "[parameters('sshKeyPath')]",
+                  "keyData": "[parameters('sshKeyData')]"
+                }
+              ]
+            }            
+          }
         },
         "storageProfile": {
           "imageReference": {
@@ -404,7 +411,7 @@
             "managedDisk": {
               "storageAccountType": "[variables('vmStorageAccountType')]"
             }
-          }
+          }        
         },
         "networkProfile": {
           "networkInterfaces": [
@@ -420,6 +427,30 @@
           }
         }
       }
+     
+    },
+    {  
+      "type":"Microsoft.Compute/virtualMachines/extensions",
+      "comments":"The shell script to install Docker.  If this step fails, check the logs in /var/log/waagent.log and /var/log/azure/* for details",
+      "name": "[concat(variables('frontTierVmName'),'-', copyIndex(1),'/install')]",
+      "apiVersion":"2015-06-15",
+      "location": "[parameters('location')]",
+      "copy": {
+        "name": "frontinstall",
+        "count": "[parameters('frontTierVmCount')]"
+      },
+      "dependsOn":[  
+        "[concat('Microsoft.Compute/virtualMachines/', concat(variables('frontTierVmName'),'-', copyIndex(1)))]"    
+     ],
+      "properties":{  
+         "publisher":"Microsoft.Azure.Extensions",
+         "type":"CustomScript",
+         "typeHandlerVersion":"2.0",
+         "autoUpgradeMinorVersion":true,
+         "settings":{  
+            "script":"[base64(variables('frontCustomData'))]"
+         }
+      }
     },
     {
       "type": "Microsoft.Compute/virtualMachines",
@@ -428,8 +459,7 @@
       "location": "[parameters('location')]",
       "comments": " back Tier VMs",
       "tags": {
-        "displayName": "back Tier VMs",
-        "provider": "[variables('redHatTags').provider]"
+        "displayName": "back Tier VMs"
       },
       "dependsOn": [
         "[concat('Microsoft.Network/networkInterfaces/', variables('backTierVmNicName'), copyindex(1))]",
@@ -447,9 +477,20 @@
           "vmSize": "[variables('vmSize')]"
         },
         "osProfile": {
-          "computerName": "[concat('backserver',copyindex(1))]",
-          "adminUsername": "[parameters('adminUsername')]",
-          "adminPassword": "[parameters('adminPassword')]"
+          "computerName": "[concat('frontserver',copyindex(1))]",
+          "adminUsername": "[parameters('adminUsername')]", 
+          "linuxConfiguration": {
+            "disablePasswordAuthentication": true,
+            "ssh": {
+              "publicKeys": [
+                {
+                  "path" : "[parameters('sshKeyPath')]",
+                  "keyData": "[parameters('sshKeyData')]"
+                }
+              ]
+            }
+         
+          }
         },
         "storageProfile": {
           "imageReference": {
@@ -481,7 +522,31 @@
           }
         }
       }
+ 
+    },
+    {  
+      "type":"Microsoft.Compute/virtualMachines/extensions",
+        "comments":"The shell script to install Docker.  If this step fails, check the logs in /var/log/waagent.log and /var/log/azure/* for details",
+        "name": "[concat(variables('backTierVmName'),'-', copyIndex(1),'/install')]",
+        "apiVersion":"2015-06-15",
+        "location": "[parameters('location')]",
+        "copy": {
+          "name": "backInstall",
+          "count": "[parameters('backTierVmCount')]"
+        },
+        "dependsOn":[  
+          "[concat('Microsoft.Compute/virtualMachines/', concat(variables('backTierVmName'),'-', copyIndex(1)))]"
+        ],
+        "properties":{  
+           "publisher":"Microsoft.Azure.Extensions",
+           "type":"CustomScript",
+           "typeHandlerVersion":"2.0",
+           "autoUpgradeMinorVersion":true,
+           "settings":{  
+              "script":"[base64(variables('backCustomData'))]"
+           }
+        }
     }
-    
+
   ]
 }
