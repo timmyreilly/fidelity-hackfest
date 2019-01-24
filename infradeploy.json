@@ -1,0 +1,487 @@
+{
+  "$schema": "https://schema.management.azure.com/schemas/2015-01-01/deploymentTemplate.json#",
+  "contentVersion": "1.0.0.0",
+  "parameters": {
+    "adminUsername": {
+      "type": "string",
+      "metadata": {
+        "description": "Username for the Virtual Machines"
+      }
+    },
+    "adminPassword": {
+      "minLength": 12,
+      "type": "securestring",
+      "metadata": {
+        "description": "Password for the Virtual Machines(Min Length: 12)"
+      }
+    },
+    "frontTierVmCount": {
+      "defaultValue": 2,
+      "type": "int",
+      "metadata": {
+        "description": "Number of front servers to be deployed"
+      }
+    },
+    "backTierVmCount": {
+      "defaultValue": 2,
+      "type": "int",
+      "metadata": {
+        "description": "Number of back servers to be deployed"
+      }
+    },
+    "location": {
+      "type": "string",
+      "defaultValue": "[resourceGroup().location]",
+      "metadata": {
+        "description": "Location for all resources."
+      }
+    },
+    "subnetId": {
+      "type": "string",
+      "defaultValue": "/subscriptions/19f8b8eb-1fd0-4b1a-a7de-d9017c6c144e/resourceGroups/fidelitynet/providers/Microsoft.Network/virtualNetworks/azure-vnet/subnets/front-tier-subnet",
+      "metadata": {
+        "description": "ID of existing subnet"
+      }
+    }
+  },
+  "variables": {
+    "vmSize": "Standard_D2_v2",
+    "vmStorageAccountType": "StandardSSD_LRS",
+    "diagStorageAccountName": "[concat(uniqueString(resourceGroup().id),'diagstorage')]",
+    "frontLoadBalancerName": "front-lb",
+    "frontFrontEndIPConfigID": "[resourceId('Microsoft.Network/loadBalancers/frontendIPConfigurations',variables('frontLoadBalancerName'),'loadBalancerFrontEnd')]",
+    "frontlbBackendPoolID": "[resourceId('Microsoft.Network/loadBalancers/backendAddressPools',variables('frontLoadBalancerName'),'loadBalancerBackend')]",
+    "frontlbProbeHttpID": "[resourceId('Microsoft.Network/loadBalancers/probes',variables('frontLoadBalancerName'),'frontlbProbeHttp')]",
+    "frontlbProbeHttpsID": "[resourceId('Microsoft.Network/loadBalancers/probes',variables('frontLoadBalancerName'),'frontlbProbeHttps')]",
+    "backLoadBalancerName": "back-lb",
+    "backFrontEndIPConfigID": "[resourceId('Microsoft.Network/loadBalancers/frontendIpConfigurations',variables('backLoadBalancerName'),'loadBalancerFrontEnd')]",
+    "backlbBackendPoolID": "[resourceId('Microsoft.Network/loadBalancers/backendAddressPools',variables('backLoadBalancerName'),'loadBalancerBackend')]",
+    "backlbProbeHttpID": "[resourceId('Microsoft.Network/loadBalancers/probes',variables('backLoadBalancerName'),'backlbProbeHttp')]",
+    "backlbProbeHttpsID": "[resourceId('Microsoft.Network/loadBalancers/probes',variables('backLoadBalancerName'),'backlbProbeHttps')]",
+    "availSetName": "avail-set-",
+    "frontTierVmNicName": "[concat(variables('frontTierVmName'), '-nic-')]",
+    "backTierVmNicName": "[concat(variables('backTierVmName'), '-nic-')]",
+    "redHatsku": "7.3",
+    "Publisher": "RedHat",
+    "Offer": "RHEL",
+    "frontTierVmName": "front-tier-vm",
+    "backTierVmName": "back-tier-vm",
+    "redHatTags": {
+      "type": "object",
+      "provider": "9d2c71fc-96ba-4b4a-93b3-14def5bc96fc"
+    }
+  },
+  "resources": [
+    {
+      "type": "Microsoft.Storage/storageAccounts",
+      "name": "[variables('diagStorageAccountName')]",
+      "apiVersion": "2016-01-01",
+      "location": "[parameters('location')]",
+      "comments": "Storage account used to store the diagnostics data",
+      "tags": {
+        "displayName": "Diagnostics Storage Account",
+        "provider": "[variables('redHatTags').provider]"
+      },
+      "sku": {
+        "name": "Standard_LRS"
+      },
+      "kind": "Storage",
+      "properties": {}
+    },
+    {
+      "type": "Microsoft.Compute/availabilitySets",
+      "name": "[concat(variables('availSetName'), copyindex(1))]",
+      "apiVersion": "2017-12-01",
+      "location": "[parameters('location')]",
+      "comments": "These are the Availability Sets for front VMs, back VMs and Database VMs",
+      "tags": {
+        "displayName": "Availability Sets",
+        "provider": "[variables('redHatTags').provider]"
+      },
+      "copy": {
+        "name": "availSetLoop",
+        "count": 2
+      },
+      "sku": {
+        "name": "Aligned"
+          },
+        "properties": { 
+            "platformFaultDomainCount": 2,
+            "platformUpdateDomainCount": 5
+        }
+    },
+    {
+      "type": "Microsoft.Network/loadBalancers",
+      "name": "[variables('frontLoadBalancerName')]",
+      "apiVersion": "2015-06-15",
+      "location": "[parameters('location')]",
+      "comments": "This Load Balancer is used to load balance front traffic among front Tier VMs",
+      "tags": {
+        "displayName": "Front Load Balancer",
+        "provider": "[variables('redHatTags').provider]"
+      },
+      "dependsOn": [
+      ],
+      "properties": {
+        "frontendIPConfigurations": [
+          {
+            "name": "loadBalancerFrontEnd",
+            "properties": {
+              "subnet": {
+                "id": "[parameters('subnetId')]"
+              }
+            }
+          }
+        ],
+        "backendAddressPools": [
+          {
+            "name": "loadBalancerBackend"
+          }
+        ],
+        "loadBalancingRules": [
+          {
+            "name": "LBRuleForlb80IP",
+            "properties": {
+              "frontendIPConfiguration": {
+                "id": "[variables('frontFrontEndIPConfigID')]"
+              },
+              "backendAddressPool": {
+                "id": "[variables('frontlbBackendPoolID')]"
+              },
+              "protocol": "Tcp",
+              "frontendPort": 80,
+              "backendPort": 80,
+              "idleTimeoutInMinutes": 5,
+              "enableFloatingIP": false,
+              "probe": {
+                "id": "[variables('frontlbProbeHttpID')]"
+              }
+            }
+          },
+          {
+            "name": "LBRuleForlb443IP",
+            "properties": {
+              "frontendIPConfiguration": {
+                "id": "[variables('frontFrontEndIPConfigID')]"
+              },
+              "backendAddressPool": {
+                "id": "[variables('frontlbBackendPoolID')]"
+              },
+              "protocol": "Tcp",
+              "frontendPort": 443,
+              "backendPort": 443,
+              "idleTimeoutInMinutes": 5,
+              "enableFloatingIP": false,
+              "probe": {
+                "id": "[variables('frontlbProbeHttpsID')]"
+              }
+            }
+          }
+        ],
+        "probes": [
+          {
+            "name": "frontlbProbeHttp",
+            "properties": {
+              "protocol": "Tcp",
+              "port": 80,
+              "intervalInSeconds": 5,
+              "numberOfProbes": 2
+            }
+          },
+          {
+            "name": "frontlbProbeHttps",
+            "properties": {
+              "protocol": "Tcp",
+              "port": 443,
+              "intervalInSeconds": 5,
+              "numberOfProbes": 2
+            }
+          }
+        ]
+      }
+    },
+    {
+      "type": "Microsoft.Network/loadBalancers",
+      "name": "[variables('backLoadBalancerName')]",
+      "apiVersion": "2015-06-15",
+      "location": "[parameters('location')]",
+      "comments": "This back Load Balancer is used to load balance traffic from front VM's to Bussiness Tier VMs",
+      "tags": {
+        "displayName": "Back Load Balancer",
+        "provider": "[variables('redHatTags').provider]"
+      },
+      "properties": {
+        "frontendIPConfigurations": [
+          {
+            "name": "loadBalancerFrontEnd",
+            "properties": {
+              "subnet": {
+                "id": "[parameters('subnetId')]"
+              }
+            }
+          }
+        ],
+        "backendAddressPools": [
+          {
+            "name": "loadBalancerBackEnd"
+          }
+        ],
+        "loadBalancingRules": [
+          {
+            "name": "LBRuleForlb80IP",
+            "properties": {
+              "frontendIPConfiguration": {
+                "id": "[variables('backFrontEndIPConfigID')]"
+              },
+              "backendAddressPool": {
+                "id": "[variables('backlbBackendPoolID')]"
+              },
+              "protocol": "Tcp",
+              "frontendPort": 80,
+              "backendPort": 80,
+              "idleTimeoutInMinutes": 5,
+              "enableFloatingIP": false,
+              "probe": {
+                "id": "[variables('backlbProbeHttpID')]"
+              }
+            }
+          },
+          {
+            "name": "LBRuleForlb443IP",
+            "properties": {
+              "frontendIPConfiguration": {
+                "id": "[variables('backFrontEndIPConfigID')]"
+              },
+              "backendAddressPool": {
+                "id": "[variables('backlbBackendPoolID')]"
+              },
+              "protocol": "Tcp",
+              "frontendPort": 443,
+              "backendPort": 443,
+              "idleTimeoutInMinutes": 5,
+              "enableFloatingIP": false,
+              "probe": {
+                "id": "[variables('backlbProbeHttpsID')]"
+              }
+            }
+          }
+        ],
+        "probes": [
+          {
+            "name": "backlbProbeHttp",
+            "properties": {
+              "protocol": "Tcp",
+              "port": 80,
+              "intervalInSeconds": 5,
+              "numberOfProbes": 2
+            }
+          },
+          {
+            "name": "backlbProbeHttps",
+            "properties": {
+              "protocol": "Tcp",
+              "port": 443,
+              "intervalInSeconds": 5,
+              "numberOfProbes": 2
+            }
+          }
+        ]
+      }
+    },
+    {
+      "type": "Microsoft.Network/networkInterfaces",
+      "name": "[concat(variables('frontTierVmNicName'), copyindex(1))]",
+      "apiVersion": "2016-03-30",
+      "location": "[parameters('location')]",
+      "comments": "NICs for front Tier VMs",
+      "tags": {
+        "displayName": "front Tier VM NICs",
+        "provider": "[variables('redHatTags').provider]"
+      },
+      "dependsOn": [
+        "[concat('Microsoft.Network/loadBalancers/', variables('frontLoadBalancerName'))]"
+      ],
+      "copy": {
+        "name": "frontTierNicLoop",
+        "count": "[parameters('frontTierVmCount')]"
+      },
+      "properties": {
+        "ipConfigurations": [
+          {
+            "name": "ipconfig1",
+            "properties": {
+              "privateIPAllocationMethod": "Dynamic",
+              "subnet": {
+                "id": "[parameters('subnetId')]"
+            },
+              "loadBalancerBackendAddressPools": [
+                {
+                  "id": "[variables('frontlbBackendPoolID')]"
+                }
+              ]
+            }
+          }
+        ]
+      }
+    },
+    {
+      "type": "Microsoft.Network/networkInterfaces",
+      "name": "[concat(variables('backTierVmNicName'), copyindex(1))]",
+      "apiVersion": "2016-03-30",
+      "location": "[parameters('location')]",
+      "comments": "NICs for back Tier VMs",
+      "tags": {
+        "displayName": "back Tier VM NICs",
+        "provider": "[variables('redHatTags').provider]"
+      },
+      "dependsOn": [
+        "[concat('Microsoft.Network/loadBalancers/', variables('backLoadBalancerName'))]"
+      ],
+      "copy": {
+        "name": "backTierNicLoop",
+        "count": "[parameters('backTierVmCount')]"
+      },
+      "properties": {
+        "ipConfigurations": [
+          {
+            "name": "ipconfig1",
+            "properties": {
+              "privateIPAllocationMethod": "Dynamic",
+              "subnet": {
+                "id": "[parameters('subnetId')]"
+              },
+              "loadBalancerBackendAddressPools": [
+                {
+                  "id": "[variables('backlbBackendPoolID')]"
+                }
+              ]
+            }
+          }
+        ]
+      }
+    },
+    {
+      "type": "Microsoft.Compute/virtualMachines",
+      "name": "[concat(variables('frontTierVmName'),'-', copyindex(1))]",
+      "apiVersion": "2018-04-01",
+      "location": "[parameters('location')]",
+      "comments": " front Tier VMs",
+      "tags": {
+        "displayName": "front Tier VMs",
+        "provider": "[variables('redHatTags').provider]"
+      },
+      "dependsOn": [
+        "[concat('Microsoft.Network/networkInterfaces/', variables('frontTierVmNicName'), copyindex(1))]",
+        "[concat('Microsoft.Compute/availabilitySets/', variables('availSetName'),'1')]"
+      ],
+      "copy": {
+        "name": "frontTierVMLoop",
+        "count": "[parameters('frontTierVmCount')]"
+      },
+      "properties": {
+        "availabilitySet": {
+          "id": "[resourceId('Microsoft.Compute/availabilitySets',concat(variables('availSetName'),'1'))]"
+        },
+        "hardwareProfile": {
+          "vmSize": "[variables('vmSize')]"
+        },
+        "osProfile": {
+          "computerName": "[concat('frontserver',copyindex(1))]",
+          "adminUsername": "[parameters('adminUsername')]",
+          "adminPassword": "[parameters('adminPassword')]"
+        },
+        "storageProfile": {
+          "imageReference": {
+            "publisher": "[variables('Publisher')]",
+            "offer": "[variables('Offer')]",
+            "sku": "[variables('redHatsku')]",
+            "version": "latest"
+          },
+          "osDisk": {
+            "caching": "ReadWrite",
+            "createOption": "FromImage",
+            "diskSizeGB": "128",
+            "managedDisk": {
+              "storageAccountType": "[variables('vmStorageAccountType')]"
+            }
+          }
+        },
+        "networkProfile": {
+          "networkInterfaces": [
+            {
+              "id": "[resourceId('Microsoft.Network/networkInterfaces', concat(variables('frontTierVmNicName'), copyindex(1)))]"
+            }
+          ]
+        },
+        "diagnosticsProfile": {
+          "bootDiagnostics": {
+            "enabled": true,
+            "storageUri": "[reference(resourceId('Microsoft.Storage/storageAccounts/', variables('diagStorageAccountName'))).primaryEndpoints.blob]"
+          }
+        }
+      }
+    },
+    {
+      "type": "Microsoft.Compute/virtualMachines",
+      "name": "[concat(variables('backTierVmName'),'-', copyindex(1))]",
+      "apiVersion": "2018-04-01",
+      "location": "[parameters('location')]",
+      "comments": " back Tier VMs",
+      "tags": {
+        "displayName": "back Tier VMs",
+        "provider": "[variables('redHatTags').provider]"
+      },
+      "dependsOn": [
+        "[concat('Microsoft.Network/networkInterfaces/', variables('backTierVmNicName'), copyindex(1))]",
+        "[concat('Microsoft.Compute/availabilitySets/',variables('availSetName'),'2')]"
+      ],
+      "copy": {
+        "name": "backTierVMLoop",
+        "count": "[parameters('backTierVmCount')]"
+      },
+      "properties": {
+        "availabilitySet": {
+          "id": "[resourceId('Microsoft.Compute/availabilitySets',concat(variables('availSetName'),'2'))]"
+        },
+        "hardwareProfile": {
+          "vmSize": "[variables('vmSize')]"
+        },
+        "osProfile": {
+          "computerName": "[concat('backserver',copyindex(1))]",
+          "adminUsername": "[parameters('adminUsername')]",
+          "adminPassword": "[parameters('adminPassword')]"
+        },
+        "storageProfile": {
+          "imageReference": {
+            "publisher": "[variables('Publisher')]",
+            "offer": "[variables('Offer')]",
+            "sku": "[variables('redHatsku')]",
+            "version": "latest"
+          },
+          "osDisk": {
+            "caching": "ReadWrite",
+            "createOption": "FromImage",
+            "diskSizeGB": "128",
+            "managedDisk": {
+              "storageAccountType": "[variables('vmStorageAccountType')]"
+            }
+          }
+        },
+        "networkProfile": {
+          "networkInterfaces": [
+            {
+              "id": "[resourceId('Microsoft.Network/networkInterfaces', concat(variables('backTierVmNicName'), copyindex(1)))]"
+            }
+          ]
+        },
+        "diagnosticsProfile": {
+          "bootDiagnostics": {
+            "enabled": true,
+            "storageUri": "[reference(resourceId('Microsoft.Storage/storageAccounts/', variables('diagStorageAccountName'))).primaryEndpoints.blob]"
+          }
+        }
+      }
+    }
+    
+  ]
+}
